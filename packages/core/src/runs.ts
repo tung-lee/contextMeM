@@ -11,6 +11,7 @@ import type {
   RunManifest,
   SiteSnapshotDiff,
   SiteSnapshotDiffEntry,
+  TargetMode,
   WalrusPackageManifest,
   WalrusResourceRecord
 } from "./types.js";
@@ -129,9 +130,21 @@ export async function resolveArtifactFile(runDir: string, requestedPath: string)
   };
 }
 
+function requiredPathsForMode(mode: TargetMode, host?: string): string[] {
+  const base = ["/context/manifest.json"];
+  if (mode === "sui") {
+    if (!host?.trim()) return base;
+    return [...base, `/context/sui/${host}/abi.json`, `/context/sui/${host}/workflows.json`, `/context/sui/${host}/summary.md`];
+  }
+  return [...base, "/index.html", "/llms.txt", "/ws-resources.json", "/context/sitemap.json", "/context/site-structure.json", "/context/images.json"];
+}
+
 export async function buildPublishReadiness(runDir: string, runId = path.basename(runDir)): Promise<PublishReadiness> {
   const files = await listArtifactFiles(runDir);
-  const requiredPaths = ["/index.html", "/llms.txt", "/ws-resources.json", "/context/manifest.json", "/context/sitemap.json", "/context/site-structure.json", "/context/images.json"];
+  const runManifest = (await readJson(path.join(runDir, "manifest.json")).catch(() => undefined)) as RunManifest | undefined;
+  const mode: TargetMode = runManifest?.mode ?? "web";
+  const suiHost = mode === "sui" ? (() => { try { return new URL(runManifest?.normalizedTarget ?? "").host; } catch { return undefined; } })() : undefined;
+  const requiredPaths = requiredPathsForMode(mode, suiHost);
   const optionalPaths = [
     "/context/brand.json",
     "/context/styleguide.json",
@@ -236,6 +249,8 @@ function classifyArtifactKind(artifactPath: string, contentType: string): Artifa
 }
 
 function classifyArtifactGroup(artifactPath: string): ArtifactFileRecord["group"] {
+  // must be first — /context/sui/ prefix must not fall through to other /context/ branches
+  if (/^\/context\/sui\//.test(artifactPath)) return "sui";
   if (/^\/context\/(?:design-system|tokens|figma|style-dictionary|tailwind|web-brand-kit|video-brand-kit)/.test(artifactPath)) return "design-system";
   if (/^\/context\/(?:walrus-site|resources|blobs|headers|routes|package)\.json$/.test(artifactPath)) return "walrus";
   if (/^\/context\/(?:screenshots|component-previews)(?:\.json|\/)/.test(artifactPath)) return "screenshots";
@@ -310,4 +325,16 @@ function stableStringify(value: unknown): string {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export async function verifySnapshot(runDir: string): Promise<{ ok: boolean; runId: string; warnings: string[] }> {
+  const warnings: string[] = [];
+  let ok = true;
+  try {
+    const manifest = await readRunManifest(runDir, path.basename(runDir));
+    if (!manifest.runId) { warnings.push("manifest.json missing runId"); ok = false; }
+    return { ok, runId: manifest.runId ?? path.basename(runDir), warnings };
+  } catch (e) {
+    return { ok: false, runId: path.basename(runDir), warnings: [`Could not read manifest: ${String(e)}`] };
+  }
 }

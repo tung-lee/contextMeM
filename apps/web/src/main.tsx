@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
+const MermaidBlock = React.lazy(() => import("./components/MermaidBlock.js").then((m) => ({ default: m.MermaidBlock })));
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
@@ -62,7 +63,7 @@ type RunResponse = {
   manifest: {
     runId: string;
     target: string;
-    mode: "web" | "walrus" | "auto";
+    mode: "web" | "walrus" | "auto" | "sui";
     status: string;
     createdAt?: string;
     updatedAt?: string;
@@ -165,6 +166,7 @@ type ArtifactManifest = {
   aiQuery?: AiQueryResult;
   screenshots?: ScreenshotArtifact[];
   componentPreviews?: ComponentPreviewArtifact[];
+  sui?: { packages: string[]; actions: string[]; objects: string[] };
 };
 
 type SiteStructure = {
@@ -200,7 +202,7 @@ type SiteStructureNode = {
 type RunHistoryItem = {
   runId: string;
   target: string;
-  mode: "web" | "walrus" | "auto";
+  mode: "web" | "walrus" | "auto" | "sui";
   status: string;
   namespace: string;
   updatedAt: string;
@@ -543,7 +545,7 @@ function ContextMemExperience() {
   const [target, setTarget] = useState(launchOptions.target);
   const [customNamespace, setCustomNamespace] = useState("");
   const [customDisplayName, setCustomDisplayName] = useState("");
-  const [mode, setMode] = useState<"auto" | "web" | "walrus">(launchOptions.mode);
+  const [mode, setMode] = useState<"auto" | "web" | "walrus" | "sui">(launchOptions.mode);
   const [buildProfile, setBuildProfile] = useState<BuildProfile>("balanced");
   const [outputs, setOutputs] = useState<string[]>(buildProfileDefaults.balanced);
   const [run, setRun] = useState<RunResponse | null>(null);
@@ -588,6 +590,14 @@ function ContextMemExperience() {
   const compactPrimaryActionLabel = busy ? "Running" : hasMemWalDelegate ? "Build" : "Import";
 
   const stats = useMemo(() => {
+    if (artifact?.sui) {
+      return [
+        { label: "Packages", value: artifact.sui.packages.length, icon: Boxes },
+        { label: "Actions", value: artifact.sui.actions.length, icon: FileText },
+        { label: "Objects", value: artifact.sui.objects.length, icon: Code2 },
+        { label: "Namespace", value: run?.manifest.namespace ?? "not synced", icon: Database }
+      ];
+    }
     return [
       { label: "Pages", value: artifact?.pages.length ?? run?.pages ?? run?.walrus?.pages ?? 0, icon: FileText },
       { label: "Images", value: artifact?.images.length ?? 0, icon: Image },
@@ -843,7 +853,7 @@ function ContextMemExperience() {
       setTarget(manifest.target);
       if (manifest.buildProfile) setBuildProfile(manifest.buildProfile);
       if (manifest.outputs?.length) setOutputs(manifest.outputs);
-      setActiveTab(nextArtifact.designSystem ? "Design System" : "Markdown");
+      setActiveTab(nextArtifact.sui ? "Blockchain" : nextArtifact.designSystem ? "Design System" : nextArtifact.walrus ? "Walrus Resources" : "Markdown");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -887,7 +897,7 @@ function ContextMemExperience() {
       if (artifacts.ok) {
         const nextArtifact = (await artifacts.json()) as ArtifactManifest;
         setArtifact(nextArtifact);
-        setActiveTab(nextArtifact.designSystem ? "Design System" : nextArtifact.walrus ? "Walrus Resources" : "Markdown");
+        setActiveTab(nextArtifact.sui ? "Blockchain" : nextArtifact.designSystem ? "Design System" : nextArtifact.walrus ? "Walrus Resources" : "Markdown");
       } else if (data.walrus) {
         setActiveTab("Walrus Resources");
       }
@@ -944,7 +954,7 @@ function ContextMemExperience() {
       const manifest = shareData.manifest;
       if (manifest) {
         setArtifact(manifest);
-        setActiveTab(manifest.designSystem ? "Design System" : manifest.walrus ? "Walrus Resources" : "Markdown");
+        setActiveTab(manifest.sui ? "Blockchain" : manifest.designSystem ? "Design System" : manifest.walrus ? "Walrus Resources" : "Markdown");
         setRun({
           manifest: {
             runId: body.job.id,
@@ -1307,6 +1317,8 @@ const appNavItems = [
 
 const buildTabs = [
   ["Markdown", FileText],
+  ["Blockchain", Cpu],
+  ["Endpoints", Server],
   ["Structure", ListTree],
   ["Images", Image],
   ["Brand", Globe2],
@@ -2374,8 +2386,8 @@ function BuildConsolePage({
 }: {
   target: string;
   setTarget: React.Dispatch<React.SetStateAction<string>>;
-  mode: "auto" | "web" | "walrus";
-  setMode: React.Dispatch<React.SetStateAction<"auto" | "web" | "walrus">>;
+  mode: "auto" | "web" | "walrus" | "sui";
+  setMode: React.Dispatch<React.SetStateAction<"auto" | "web" | "walrus" | "sui">>;
   buildProfile: BuildProfile;
   setBuildProfile: React.Dispatch<React.SetStateAction<BuildProfile>>;
   outputs: string[];
@@ -2464,16 +2476,16 @@ function BuildConsolePage({
           <span>Target</span>
           <div className="targetBox">
             <Search size={17} />
-            <input value={target} onChange={(event) => setTarget(event.target.value)} placeholder="Paste a .wal.app URL, Walrus object ID, or web URL" />
+            <input value={target} onChange={(event) => setTarget(event.target.value)} placeholder="Paste a .wal.app URL, Walrus object ID, web URL, or Sui dApp URL" />
           </div>
         </label>
 
         <div className="field">
           <span>Mode</span>
           <div className="segmented">
-            {(["auto", "web", "walrus"] as const).map((item) => (
+            {(["auto", "web", "walrus", "sui"] as const).map((item) => (
               <button key={item} className={mode === item ? "selected" : ""} onClick={() => setMode(item)}>
-                {item === "web" ? <Globe2 size={15} /> : item === "walrus" ? <Boxes size={15} /> : <Sparkles size={15} />}
+                {item === "web" ? <Globe2 size={15} /> : item === "walrus" ? <Boxes size={15} /> : item === "sui" ? <Code2 size={15} /> : <Sparkles size={15} />}
                 {item}
               </button>
             ))}
@@ -2984,6 +2996,8 @@ function ResultPane({
   if (tab === "Design System" || tab === "Styleguide") return <DesignSystemPanel data={artifact.designSystem} fallback={artifact.styleguide} run={run} authToken={authToken} />;
   if (tab === "AI Query") return <AiQueryPanel artifact={artifact} run={run} setArtifact={setArtifact} authToken={authToken} history={history} accountLabel={accountLabel} />;
   if (tab === "Artifacts") return <ArtifactViewerPanel run={run} authToken={authToken} />;
+  if (tab === "Blockchain") return <SuiBlockchainPanel run={run} sui={artifact.sui} authToken={authToken} />;
+  if (tab === "Endpoints") return <ApiEndpointsPanel run={run} authToken={authToken} />;
   if (tab === "Walrus Resources") return <WalrusResourcesPanel data={artifact.walrus} />;
   if (tab === "Walrus History") return <WalrusHistoryPanel run={run} walrus={artifact.walrus} authToken={authToken} />;
   if (tab === "MemWal Memory") return <MemWalPanel artifact={artifact} run={run} history={history} refreshHistory={refreshHistory} authToken={authToken} />;
@@ -3115,7 +3129,22 @@ function MarkdownPanel({ pages, namespace, onPageEdited }: { pages: MarkdownPage
 
           {mode === "preview" ? (
             <div className="markdownBody">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  a: MarkdownLink,
+                  code: ({ className, children, ...props }) => {
+                    if (className === "language-mermaid") {
+                      return (
+                        <Suspense fallback={<div className="mermaid-loading">rendering diagram…</div>}>
+                          <MermaidBlock source={String(children).trim()} />
+                        </Suspense>
+                      );
+                    }
+                    return <code className={className} {...props}>{children}</code>;
+                  }
+                }}
+              >
                 {selectedValue}
               </ReactMarkdown>
             </div>
@@ -4560,7 +4589,7 @@ function PublishPanel({ run, authToken }: { run: RunResponse | null; authToken: 
     setHostedNamespace(run.manifest.namespace);
     setHostedDisplayName(defaultDisplayName(run.manifest.target));
     setHostedDescription("");
-    setHostedTags(run.manifest.mode === "walrus" ? "walrus,context" : "web,context");
+    setHostedTags(run.manifest.mode === "walrus" ? "walrus,context" : run.manifest.mode === "sui" ? "sui,context" : "web,context");
     void fetch(`${API_BASE}/api/runs/${run.manifest.runId}/publish-readiness`, { headers: authHeaders(authToken) })
       .then((response) => (response.ok ? response.json() : response.text().then((text) => Promise.reject(new Error(text)))))
       .then((data) => setReadiness(data as PublishReadiness))
@@ -5940,6 +5969,416 @@ function BrandPanel({ data }: { data?: ArtifactManifest["brand"] }) {
   );
 }
 
+type ApiCallEntry = {
+  url: string;
+  method: string;
+  kind: "fetch" | "axios" | "xhr" | "websocket" | "config";
+  chunkUrl: string;
+  count: number;
+  pattern: string;
+  configKey?: string;
+};
+
+type ApiCallsResult = {
+  target: string;
+  host: string;
+  calls: ApiCallEntry[];
+  extractedAt: string;
+  authRequired?: boolean;
+  authHints?: string[];
+  graphql?: { endpoints: string[]; queries: string[] };
+};
+
+const METHOD_COLORS: Record<string, string> = {
+  GET: "#3b82f6", POST: "#10b981", PUT: "#f59e0b", DELETE: "#ef4444",
+  PATCH: "#8b5cf6", HEAD: "#6b7280", OPTIONS: "#6b7280", UNKNOWN: "#9ca3af"
+};
+
+function ApiEndpointsPanel({ run, authToken }: { run: RunResponse | null; authToken: string }) {
+  const [data, setData] = useState<ApiCallsResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadStarted, setLoadStarted] = useState(false);
+  const [search, setSearch] = useState("");
+  const [methodFilter, setMethodFilter] = useState<string>("ALL");
+  const [kindFilter, setKindFilter] = useState<string>("ALL");
+  const [expandedChunk, setExpandedChunk] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!run?.manifest.runId || loadStarted) return;
+    setLoadStarted(true);
+    setLoading(true);
+    void fetch(`${API_BASE}/api/runs/${run.manifest.runId}/api-calls`, { headers: authHeaders(authToken) })
+      .then((r) => r.ok ? r.json() as Promise<ApiCallsResult> : null)
+      .then((d) => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [run?.manifest.runId, authToken, loadStarted]);
+
+  if (!run) {
+    return <div className="empty"><Server size={24} /><span>No active run.</span></div>;
+  }
+
+  if (loading) {
+    return (
+      <div className="empty">
+        <LoaderCircle size={24} />
+        <span>Scanning bundle for API calls{data === null && !loadStarted ? "" : "…"}</span>
+        <small style={{ color: "#888", fontSize: 12 }}>This may take a few seconds on first load</small>
+      </div>
+    );
+  }
+
+  if (!data || data.calls.length === 0) {
+    return (
+      <div className="empty">
+        <Server size={24} />
+        <span>No HTTP API calls detected in the bundle.</span>
+        <small style={{ color: "#888", fontSize: 12 }}>{data?.target ?? ""}</small>
+      </div>
+    );
+  }
+
+  const q = search.toLowerCase().trim();
+  const filtered = data.calls.filter((c) => {
+    if (methodFilter !== "ALL" && c.method !== methodFilter) return false;
+    if (kindFilter !== "ALL" && c.kind !== kindFilter) return false;
+    if (q && !c.pattern.toLowerCase().includes(q) && !c.url.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  // Group by origin (protocol+host)
+  const byOrigin = new Map<string, ApiCallEntry[]>();
+  for (const call of filtered) {
+    let origin = call.pattern;
+    try { origin = new URL(call.url).origin; } catch {
+      origin = call.url.startsWith("/") ? data.host : call.url.split("/").slice(0, 3).join("/");
+    }
+    const list = byOrigin.get(origin) ?? [];
+    list.push(call);
+    byOrigin.set(origin, list);
+  }
+
+  const methods = [...new Set(data.calls.map((c) => c.method))].sort();
+  const kinds = [...new Set(data.calls.map((c) => c.kind))].sort();
+
+  return (
+    <div className="panel apiEndpointsPanel">
+      <div className="apiEndpointsHeader">
+        <div className="apiEndpointsMeta">
+          <span className="suiChip">{data.calls.length} endpoint{data.calls.length !== 1 ? "s" : ""}</span>
+          <span className="suiChip">{byOrigin.size} origin{byOrigin.size !== 1 ? "s" : ""}</span>
+          <span className="suiChip" title={data.target}>{data.host}</span>
+          {data.authRequired && <span className="suiChip" style={{ background: "#7c3aed", color: "#fff" }}>auth required</span>}
+          {(data.graphql?.endpoints.length ?? 0) > 0 && <span className="suiChip" style={{ background: "#0891b2", color: "#fff" }}>GraphQL</span>}
+        </div>
+        <input className="suiSearch" placeholder="Filter endpoints…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div className="apiFilters">
+          <select className="apiFilterSelect" value={methodFilter} onChange={(e) => setMethodFilter(e.target.value)}>
+            <option value="ALL">All methods</option>
+            {methods.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <select className="apiFilterSelect" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
+            <option value="ALL">All kinds</option>
+            {kinds.map((k) => <option key={k} value={k}>{k}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="suiEmpty">No endpoints matching filters.</div>
+      ) : (
+        <div className="apiEndpointsList">
+          {[...byOrigin.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([origin, calls]) => (
+            <div key={origin} className="apiOriginGroup">
+              <div className="apiOriginLabel">
+                <Globe2 size={13} />
+                <strong>{origin}</strong>
+                <span className="suiChip">{calls.length}</span>
+              </div>
+              <div className="apiEndpointRows">
+                {calls.map((call, i) => {
+                  let pathPart = call.pattern;
+                  if (call.kind === "config") {
+                    pathPart = call.configKey ? `${call.configKey} = ${call.url}` : call.url;
+                  } else if (call.kind === "websocket") {
+                    pathPart = call.url;
+                  } else {
+                    try { pathPart = new URL(call.url).pathname + (new URL(call.url).search ? "?…" : ""); } catch { /* keep */ }
+                  }
+                  const chunkName = call.chunkUrl.split("/").pop() ?? call.chunkUrl;
+                  const isExpanded = expandedChunk === `${origin}-${i}`;
+                  return (
+                    <div key={i} className="apiEndpointRow" onClick={() => setExpandedChunk(isExpanded ? null : `${origin}-${i}`)}>
+                      <div className="apiEndpointMain">
+                        {call.kind !== "config" && call.kind !== "websocket" && (
+                          <span className="apiMethod" style={{ color: METHOD_COLORS[call.method] ?? "#9ca3af" }}>{call.method}</span>
+                        )}
+                        <code className="apiPath">{pathPart}</code>
+                        <span className="apiKindBadge">{call.kind}</span>
+                        {call.count > 1 && <span className="apiCountBadge">×{call.count}</span>}
+                      </div>
+                      {isExpanded && (
+                        <div className="apiEndpointDetail">
+                          {call.configKey && <div className="apiDetailRow"><span>Variable</span><code>{call.configKey}</code></div>}
+                          <div className="apiDetailRow"><span>Full URL</span><code>{call.url}</code></div>
+                          <div className="apiDetailRow"><span>Pattern</span><code>{call.pattern}</code></div>
+                          <div className="apiDetailRow"><span>Source</span><code title={call.chunkUrl}>{chunkName}</code></div>
+                          <div className="apiDetailRow"><span>Occurrences</span><code>{call.count}</code></div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {(data.authHints?.length ?? 0) > 0 && (
+        <div className="apiAuthSection">
+          <strong>Auth signals detected</strong>
+          <ul>{data.authHints!.map((h) => <li key={h}>{h}</li>)}</ul>
+        </div>
+      )}
+      {(data.graphql?.endpoints.length ?? 0) > 0 && (
+        <div className="apiGraphqlSection">
+          <strong>GraphQL endpoints</strong>
+          <div className="apiGraphqlEndpoints">
+            {data.graphql!.endpoints.map((ep) => <code key={ep}>{ep}</code>)}
+          </div>
+          {(data.graphql!.queries.length > 0) && (
+            <>
+              <strong>Named operations</strong>
+              <div className="apiGraphqlOps">
+                {data.graphql!.queries.map((q) => <span key={q} className="suiChip">{q}</span>)}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type SuiAbiEntry = {
+  host: string;
+  network: string;
+  packages: Array<{
+    id: string;
+    modules: Array<{
+      name: string;
+      entryFunctions: Array<{ name: string; target: string; visibility: string; typeParams: number; params: string[]; returns: string[] }>;
+      allFunctions: Array<{ name: string; target: string; visibility: string; typeParams: number; params: string[]; returns: string[] }>;
+      structs: Array<{ name: string; abilities: string[]; typeParams: number; fields: Array<{ name: string; type: string }> }>;
+    }>;
+  }>;
+};
+
+function SuiBlockchainPanel({ run, sui, authToken }: { run: RunResponse | null; sui?: ArtifactManifest["sui"]; authToken: string }) {
+  const [data, setData] = useState<SuiAbiEntry | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [subTab, setSubTab] = useState<"Functions" | "Types" | "Objects">("Functions");
+  const [expandedFns, setExpandedFns] = useState<Set<string>>(new Set());
+  const [expandedStructs, setExpandedStructs] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (!run?.manifest.runId) return;
+    setLoading(true);
+    void fetch(`${API_BASE}/api/runs/${run.manifest.runId}/sui-abi`, { headers: authHeaders(authToken) })
+      .then((r) => r.ok ? r.json() as Promise<SuiAbiEntry> : null)
+      .then((d) => { setData(d); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [run?.manifest.runId, authToken]);
+
+  if (!sui) {
+    return (
+      <div className="empty">
+        <Cpu size={24} />
+        <span>No Sui blockchain data in this run. Extract a Sui dApp to see on-chain packages, functions, and types.</span>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="empty">
+        <LoaderCircle size={24} />
+        <span>Loading on-chain ABI…</span>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="empty">
+        <Cpu size={24} />
+        <span>{sui.packages.length} packages · {sui.actions.length} entry functions · {sui.objects.length} object types</span>
+      </div>
+    );
+  }
+
+  const q = search.toLowerCase().trim();
+
+  const allEntryFns = data.packages.flatMap((pkg) =>
+    pkg.modules.flatMap((mod) =>
+      mod.entryFunctions.map((fn) => ({ pkg, mod, fn }))
+    )
+  );
+  const allStructs = data.packages.flatMap((pkg) =>
+    pkg.modules.flatMap((mod) =>
+      mod.structs.map((s) => ({ pkg, mod, s }))
+    )
+  );
+
+  const filteredFns = q
+    ? allEntryFns.filter(({ fn, mod }) => fn.name.includes(q) || mod.name.includes(q))
+    : allEntryFns;
+
+  const filteredStructs = q
+    ? allStructs.filter(({ s, mod }) => s.name.includes(q) || mod.name.includes(q))
+    : allStructs;
+
+  const filteredObjects = q
+    ? sui.objects.filter((o) => o.toLowerCase().includes(q))
+    : sui.objects;
+
+  function toggleFn(target: string) {
+    setExpandedFns((prev) => {
+      const next = new Set(prev);
+      if (next.has(target)) next.delete(target); else next.add(target);
+      return next;
+    });
+  }
+  function toggleStruct(key: string) {
+    setExpandedStructs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  return (
+    <div className="panel suiBlockchainPanel">
+      <div className="suiBlockchainHeader">
+        <div className="suiBlockchainMeta">
+          <span className="suiChip">{data.network}</span>
+          <span className="suiChip">{data.packages.length} pkg{data.packages.length !== 1 ? "s" : ""}</span>
+          <span className="suiChip">{allEntryFns.length} entry fn{allEntryFns.length !== 1 ? "s" : ""}</span>
+          <span className="suiChip">{allStructs.length} type{allStructs.length !== 1 ? "s" : ""}</span>
+        </div>
+        <input
+          className="suiSearch"
+          placeholder="Search…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div className="suiSubTabs" role="group">
+          {(["Functions", "Types", "Objects"] as const).map((t) => (
+            <button key={t} className={subTab === t ? "selected" : ""} onClick={() => setSubTab(t)}>
+              {t === "Functions" ? <Play size={13} /> : t === "Types" ? <Code2 size={13} /> : <Boxes size={13} />}
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {subTab === "Functions" && (
+        <div className="suiFunctionList">
+          {filteredFns.length === 0 && <div className="suiEmpty">No entry functions{q ? ` matching "${q}"` : ""}.</div>}
+          {filteredFns.map(({ pkg, mod, fn }) => {
+            const expanded = expandedFns.has(fn.target);
+            return (
+              <article key={fn.target} className={`suiFnCard ${expanded ? "expanded" : ""}`}>
+                <button className="suiFnHead" onClick={() => toggleFn(fn.target)}>
+                  <div className="suiFnTitle">
+                    <code className="suiFnName">{fn.name}</code>
+                    <span className="suiFnMod">{mod.name}</span>
+                    {fn.typeParams > 0 && <span className="suiTag">T×{fn.typeParams}</span>}
+                  </div>
+                  <div className="suiFnMeta">
+                    <code className="suiFnPkg" title={pkg.id}>{pkg.id.slice(0, 10)}…</code>
+                    <span className={`suiVisibility ${fn.visibility.toLowerCase()}`}>{fn.visibility.toLowerCase()}</span>
+                    <span className="suiTag entry">entry</span>
+                    <span className="suiExpandIcon">{expanded ? "▲" : "▼"}</span>
+                  </div>
+                </button>
+                {expanded && (
+                  <div className="suiFnBody">
+                    <div className="suiFnTarget">
+                      <span>Target</span>
+                      <code>{fn.target}</code>
+                    </div>
+                    {fn.params.length > 0 && (
+                      <table className="suiParamTable">
+                        <thead><tr><th>#</th><th>Parameter</th></tr></thead>
+                        <tbody>
+                          {fn.params.map((p, i) => (
+                            <tr key={i}><td>{i + 1}</td><td><code>{p}</code></td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    {fn.returns.length > 0 && (
+                      <div className="suiReturns">
+                        <span>Returns</span>
+                        <div>{fn.returns.map((r, i) => <code key={i}>{r}</code>)}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      {subTab === "Types" && (
+        <div className="suiStructList">
+          {filteredStructs.length === 0 && <div className="suiEmpty">No types{q ? ` matching "${q}"` : ""}.</div>}
+          {filteredStructs.map(({ pkg, mod, s }) => {
+            const key = `${pkg.id}::${mod.name}::${s.name}`;
+            const expanded = expandedStructs.has(key);
+            return (
+              <article key={key} className={`suiStructCard ${expanded ? "expanded" : ""}`}>
+                <button className="suiFnHead" onClick={() => toggleStruct(key)}>
+                  <div className="suiFnTitle">
+                    <code className="suiFnName">{s.name}</code>
+                    <span className="suiFnMod">{mod.name}</span>
+                    {s.abilities.map((a) => <span key={a} className="suiAbility">{a}</span>)}
+                  </div>
+                  <div className="suiFnMeta">
+                    <code className="suiFnPkg" title={pkg.id}>{pkg.id.slice(0, 10)}…</code>
+                    <span className="suiExpandIcon">{expanded ? "▲" : "▼"}</span>
+                  </div>
+                </button>
+                {expanded && s.fields.length > 0 && (
+                  <table className="suiParamTable">
+                    <thead><tr><th>Field</th><th>Type</th></tr></thead>
+                    <tbody>
+                      {s.fields.map((f) => (
+                        <tr key={f.name}><td><code>{f.name}</code></td><td><code>{f.type}</code></td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      {subTab === "Objects" && (
+        <div className="suiObjectList">
+          {filteredObjects.length === 0 && <div className="suiEmpty">No object types{q ? ` matching "${q}"` : ""}.</div>}
+          {filteredObjects.map((o) => (
+            <div key={o} className="suiObjectRow"><code>{o}</code></div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WalrusResourcesPanel({ data }: { data?: ArtifactManifest["walrus"] }) {
   if (!data) return <JsonPanel data={{ status: "No Walrus resource artifact" }} />;
 
@@ -6510,7 +6949,7 @@ function downloadExport(label: string, payload: unknown, contentType: string): v
   URL.revokeObjectURL(url);
 }
 
-function readLaunchOptions(): { target: string; mode: "auto" | "web" | "walrus"; autorun: boolean } {
+function readLaunchOptions(): { target: string; mode: "auto" | "web" | "walrus" | "sui"; autorun: boolean } {
   if (typeof window === "undefined") return { target: "", mode: "auto", autorun: false };
 
   const params = new URLSearchParams(window.location.search);
@@ -6518,7 +6957,7 @@ function readLaunchOptions(): { target: string; mode: "auto" | "web" | "walrus";
 
   return {
     target: params.get("target") ?? "",
-    mode: mode === "web" || mode === "walrus" || mode === "auto" ? mode : "auto",
+    mode: mode === "web" || mode === "walrus" || mode === "auto" || mode === "sui" ? mode : "auto",
     autorun: params.get("autorun") === "1" || params.get("autorun") === "true"
   };
 }

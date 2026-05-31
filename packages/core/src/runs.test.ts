@@ -48,6 +48,56 @@ describe("run history and artifacts", () => {
   });
 });
 
+describe("sui mode artifact classification and readiness", () => {
+  it("classifies /context/sui/ files as group 'sui'", async () => {
+    const runDir = path.join(tmp, "sui-run");
+    await fs.mkdir(path.join(runDir, "context", "sui", "app.cetus.zone"), { recursive: true });
+    await fs.writeFile(path.join(runDir, "context", "sui", "app.cetus.zone", "abi.json"), "{}");
+
+    const files = await listArtifactFiles(runDir);
+
+    const abiFile = files.find((f) => f.path === "/context/sui/app.cetus.zone/abi.json");
+    expect(abiFile).toBeDefined();
+    expect(abiFile?.group).toBe("sui");
+  });
+
+  it("buildPublishReadiness: sui mode requires sui-specific paths and not web paths", async () => {
+    const runDir = path.join(tmp, "sui-ready");
+    const host = "app.cetus.zone";
+    await fs.mkdir(path.join(runDir, "context", "sui", host), { recursive: true });
+    const manifest: RunManifest = {
+      runId: "sui-ready",
+      target: `https://${host}/swap`,
+      normalizedTarget: `https://${host}/swap`,
+      targetKind: "url",
+      mode: "sui",
+      status: "completed",
+      createdAt: "2026-05-31T00:00:00.000Z",
+      updatedAt: "2026-05-31T00:00:00.000Z",
+      namespace: `sui:${host}`,
+      outputs: ["abi"],
+      errors: [],
+      artifactDir: runDir
+    };
+    await fs.writeFile(path.join(runDir, "manifest.json"), JSON.stringify(manifest));
+    await fs.writeFile(path.join(runDir, "context", "manifest.json"), "{}");
+    await fs.writeFile(path.join(runDir, "context", "sui", host, "abi.json"), "{}");
+    await fs.writeFile(path.join(runDir, "context", "sui", host, "workflows.json"), "{}");
+    await fs.writeFile(path.join(runDir, "context", "sui", host, "summary.md"), "# summary");
+
+    const readiness = await buildPublishReadiness(runDir, "sui-ready");
+
+    expect(readiness.ready).toBe(true);
+    // sui mode must not require web-only paths
+    expect(readiness.required.map((r) => r.path)).not.toContain("/index.html");
+    expect(readiness.required.map((r) => r.path)).not.toContain("/llms.txt");
+    // must require the sui-specific paths
+    expect(readiness.required.map((r) => r.path)).toContain(`/context/sui/${host}/abi.json`);
+    expect(readiness.required.map((r) => r.path)).toContain(`/context/sui/${host}/workflows.json`);
+    expect(readiness.required.map((r) => r.path)).toContain(`/context/sui/${host}/summary.md`);
+  });
+});
+
 describe("site snapshot diff", () => {
   it("detects changed pages, resources, images, and design tokens", async () => {
     await writeRun("before", "2026-01-01T00:00:00.000Z", "hash-a", "#111111");

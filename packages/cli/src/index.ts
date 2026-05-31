@@ -12,22 +12,28 @@ import {
   crawlSitemap,
   crawlWebSite,
   createRunId,
+  detectActions,
   diffRunSnapshots,
   extractBrandProfile,
   extractDesignSystem,
   extractStyleguide,
+  extractSuiDapp,
+  extractSuiRefs,
+  fetchSuiAbi,
   findPriorRunForNamespace,
   listArtifactFiles,
   listRuns,
   namespaceForTarget,
   parseChunksNdjson,
   renderChunksNdjson,
+  scrapeSuiBundle,
   scrapeWebPage,
   verifySnapshot,
   type AiDatapoint,
   type ContextChunk,
   type Network,
-  type PageArtifact
+  type PageArtifact,
+  type SuiNetwork
 } from "@contextmem/core";
 import { MemWalMcpClient, MemWalSdkClient, selectMemWalTransport, summarizeSnapshot, type SiteSnapshot } from "@contextmem/memwal";
 
@@ -188,6 +194,105 @@ program
       pages = materialized.pages;
     }
     print(await aiQueryWebsite(target, datapoints, pages));
+  });
+
+const sui = program.command("sui").description("Sui Move extraction from dApp frontends");
+
+sui
+  .command("extract")
+  .argument("<url>", "Sui dApp URL")
+  .option("--mainnet", "Use mainnet RPC (default)")
+  .option("--testnet", "Use testnet RPC")
+  .option("--rpc <url>", "Override Sui RPC URL")
+  .option("--cache-dir <path>", "Cache directory for ABI fetches")
+  .option("--max-bytes <n>", "Max total bundle bytes", numberOption, 50 * 1024 * 1024)
+  .option("--max-follow-depth <n>", "Lazy chunk follow depth", numberOption, 1)
+  .option("--snapshot [transport]", "Emit MemWal snapshot (auto|sdk|mcp)")
+  .action(async (url, options) => {
+    const network = (options.testnet ? "testnet" : "mainnet") as SuiNetwork;
+    const parsedUrl = new URL(url);
+    const host = parsedUrl.host;
+    const runId = createRunId("sui-extract");
+    const runDir = path.join(runsDir, runId);
+    const cacheDir = options.cacheDir ?? path.join(runsDir, ".cache", "sui-abi");
+    const memwalOpts = options.snapshot
+      ? { client: memwalClient(typeof options.snapshot === "string" ? options.snapshot : undefined) as import("@contextmem/core").MemWalLike, transport: "auto" as const }
+      : undefined;
+    const result = await extractSuiDapp(
+      { url, host, network },
+      {
+        runDir,
+        cacheDir,
+        rpcUrl: options.rpc,
+        memwal: memwalOpts,
+        bundle: { maxTotalBytes: options.maxBytes, maxFollowDepth: options.maxFollowDepth },
+        onProgress: (p) => process.stderr.write(`[${p.phase}] ${p.label ?? ""}\n`)
+      }
+    );
+    print({
+      runDir,
+      actions: result.artifacts.workflows.actions.length,
+      packages: Object.keys(result.artifacts.abi.packages).length,
+      warnings: result.warnings,
+      errors: result.errors
+    });
+  });
+
+sui
+  .command("packages")
+  .argument("<url>", "Sui dApp URL")
+  .option("--mainnet", "Use mainnet (default)")
+  .option("--testnet", "Use testnet")
+  .option("--max-bytes <n>", "Max total bundle bytes", numberOption, 50 * 1024 * 1024)
+  .action(async (url, options) => {
+    const network = (options.testnet ? "testnet" : "mainnet") as SuiNetwork;
+    const host = new URL(url).host;
+    const result = await scrapeSuiBundle({ url, host, network }, { maxTotalBytes: options.maxBytes });
+    const refs = extractSuiRefs(result.chunks);
+    const ids = [...refs.packageIds].sort();
+    print({ count: ids.length, packageIds: ids });
+  });
+
+sui
+  .command("actions")
+  .argument("<url>", "Sui dApp URL")
+  .option("--mainnet", "Use mainnet (default)")
+  .option("--testnet", "Use testnet")
+  .option("--max-bytes <n>", "Max total bundle bytes", numberOption, 50 * 1024 * 1024)
+  .action(async (url, options) => {
+    const network = (options.testnet ? "testnet" : "mainnet") as SuiNetwork;
+    const host = new URL(url).host;
+    const result = await scrapeSuiBundle({ url, host, network }, { maxTotalBytes: options.maxBytes });
+    const detected = detectActions(result.chunks);
+    print({
+      count: detected.actions.length,
+      actions: detected.actions.map((a) => ({
+        name: a.name,
+        targets: a.steps.filter((s) => s.kind === "moveCall").map((s) => s.kind === "moveCall" ? s.target : ""),
+        touchedObjects: a.touchedObjects.length
+      }))
+    });
+  });
+
+sui
+  .command("abi")
+  .argument("<packageId>", "0x-prefixed Sui package ID")
+  .option("--mainnet", "Use mainnet (default)")
+  .option("--testnet", "Use testnet")
+  .option("--rpc <url>", "Override Sui RPC URL")
+  .option("--cache-dir <path>", "Cache directory")
+  .action(async (packageId, options) => {
+    if (!/^0x[0-9a-fA-F]+$/.test(packageId as string)) {
+      console.error("Invalid package ID — must be 0x-prefixed hex");
+      process.exit(2);
+    }
+    const network = (options.testnet ? "testnet" : "mainnet") as SuiNetwork;
+    const result = await fetchSuiAbi([packageId as `0x${string}`], {
+      network,
+      rpcUrl: options.rpc,
+      cacheDir: options.cacheDir
+    });
+    print(result.abi.packages[packageId] ?? { error: "not found", notPackages: result.notPackages });
   });
 
 const memwal = program.command("memwal").description("MemWal snapshot memory");

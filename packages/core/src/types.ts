@@ -1,4 +1,4 @@
-export type TargetMode = "auto" | "web" | "walrus";
+export type TargetMode = "auto" | "web" | "walrus" | "sui";
 export type TargetKind = "url" | "domain" | "email" | "ticker" | "name" | "walrus-object" | "walrus-url" | "preview-config";
 export type RunStatus = "queued" | "running" | "completed" | "failed";
 export type Network = "testnet" | "mainnet";
@@ -90,7 +90,7 @@ export type ArtifactFileRecord = {
   updatedAt: string;
   contentType: string;
   kind: "json" | "markdown" | "html" | "image" | "css" | "text" | "binary" | "other";
-  group: "core" | "design-system" | "walrus" | "screenshots" | "package" | "pages" | "assets" | "other";
+  group: "core" | "design-system" | "walrus" | "sui" | "screenshots" | "package" | "pages" | "assets" | "other";
   previewable: boolean;
   downloadable: boolean;
 };
@@ -310,11 +310,14 @@ export type PageArtifact = {
   images: ImageAsset[];
   contentHash: string;
   source?: {
-    kind: "web" | "walrus";
+    kind: "web" | "walrus" | "sui";
     resourcePath?: string;
     blobId?: string;
     blobHash?: string;
     quiltPatchId?: string;
+    bundleHash?: string;
+    packageId?: string;
+    module?: string;
   };
 };
 
@@ -640,4 +643,11 @@ export type WalrusPackageManifest = {
     site: WalrusSiteContext;
     resources: WalrusResourceRecord[];
   };
+  sui?: {
+    packages: string[];
+    actions: string[];
+    objects: string[];
+  };
 };
+
+export * from "./sui-types.js";

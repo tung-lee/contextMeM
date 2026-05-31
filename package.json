@@ -31,6 +31,8 @@
     "@mysten/sui": "^2.9.1",
     "@vitejs/plugin-react": "^5.1.1",
     "agents": "^0.13.2",
+    "acorn": "^8.12.1",
+    "acorn-walk": "^8.3.4",
     "cheerio": "^1.1.2",
     "commander": "^14.0.2",
     "concurrently": "^9.2.1",
@@ -50,6 +52,7 @@
     "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@types/acorn": "^4.0.6",
     "@types/css-tree": "^2.3.11",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^25.0.1",

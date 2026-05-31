@@ -27,9 +27,17 @@ import {
   readContextManifest,
   readRunManifest,
   resolveArtifactFile,
+  extractSuiDapp,
+  extractApiCalls,
+  renderTypeTag,
+  scrapeSuiBundle,
   scrapeWebPage,
   type AiDatapoint,
+  type ApiCallsResult,
   type BuildProfile,
+  type MemWalLike,
+  type SuiAbi,
+  type SuiNetwork,
   type DiscoveryStats,
   type Network,
   type RunCacheStats,
@@ -98,7 +106,13 @@ app.setErrorHandler((error, _request, reply) => {
 
 const runSchema = z.object({
   target: z.string().min(1),
-  mode: z.enum(["auto", "web", "walrus"]).default("auto"),
+  mode: z.enum(["auto", "web", "walrus", "sui"]).default("auto"),
+  sui: z
+    .object({
+      maxFollowDepth: z.number().int().min(0).max(3).default(1),
+      maxTotalBytes: z.number().int().min(1_000_000).max(200_000_000).default(50_000_000)
+    })
+    .optional(),
   network: z.enum(["testnet", "mainnet"]).default("mainnet"),
   buildProfile: z.enum(["fast", "balanced", "full"]).default("balanced"),
   outputs: z.array(z.string()).optional(),
@@ -344,6 +358,27 @@ async function executeContextRun({
       };
     }
 
+    if (mode === "sui") {
+      const suiUrl = new URL(input.target);
+      const suiTarget = { url: input.target, host: suiUrl.host, network: (input.network ?? "mainnet") as SuiNetwork };
+      const suiResult = await extractSuiDapp(suiTarget, {
+        runDir: artifactDir,
+        cacheDir: path.join(runsDir, ".cache", "sui-abi"),
+        rpcUrl: process.env.SUI_RPC_URL,
+        bundle: {
+          maxFollowDepth: input.sui?.maxFollowDepth ?? 1,
+          maxTotalBytes: input.sui?.maxTotalBytes ?? 50_000_000
+        },
+        onProgress: setProgress
+      });
+      manifest.namespace = suiResult.namespace;
+      manifest.status = "completed";
+      manifest.updatedAt = new Date().toISOString();
+      manifest.errors = suiResult.errors;
+      await writeQueuedManifest();
+      return { manifest, sui: { packages: Object.keys(suiResult.artifacts.abi.packages).length, actions: suiResult.artifacts.workflows.actions.length } };
+    }
+
     const includeImages = selectedOutputs.has("images") || selectedOutputs.has("brand") || selectedOutputs.has("styleguide") || selectedOutputs.has("screenshots");
     const shouldCrawl = selectedOutputs.has("crawl") || selectedOutputs.has("sitemap");
     const sitemapPromise = selectedOutputs.has("sitemap") ? measureRunTiming(timings, "sitemap", () => crawlSitemap(input.target).catch(() => undefined)) : Promise.resolve(undefined);
@@ -486,7 +521,141 @@ app.get("/api/runs/:id/events", async (request, reply) => {
 app.get("/api/runs/:id/artifacts", async (request) => {
   const id = (request.params as { id: string }).id;
   await requireRunAccess(request.headers.authorization, id);
-  return readContextManifest(runsDir, id);
+  const manifest = await readContextManifest(runsDir, id) as Record<string, unknown>;
+
+  // Sui runs only produce context/sui/<host>/ — inject markdown files as pages
+  // so the existing markdown viewer can render them (including mermaid action diagrams)
+  const suiIndex = manifest.sui as { packages?: string[]; actions?: string[]; objects?: string[] } | undefined;
+  if (suiIndex) {
+    const runDir = path.join(runsDir, id);
+    const suiBase = path.join(runDir, "context", "sui");
+    const pages: Array<{ url: string; routePath: string; title: string; markdown: string }> = [];
+    try {
+      const hostDirs = await fs.readdir(suiBase);
+      for (const host of hostDirs) {
+        const hostDir = path.join(suiBase, host);
+        // summary.md first
+        try {
+          const summary = await fs.readFile(path.join(hostDir, "summary.md"), "utf8");
+          pages.push({ url: `sui://${host}`, routePath: `/sui/${host}`, title: `Sui: ${host}`, markdown: summary });
+        } catch { /* skip if missing */ }
+        // objects.md
+        try {
+          const objects = await fs.readFile(path.join(hostDir, "objects.md"), "utf8");
+          pages.push({ url: `sui://${host}/objects`, routePath: `/sui/${host}/objects`, title: `Objects: ${host}`, markdown: objects });
+        } catch { /* skip */ }
+        // per-action markdown
+        try {
+          const actionFiles = await fs.readdir(path.join(hostDir, "actions"));
+          for (const f of actionFiles.sort()) {
+            if (!f.endsWith(".md")) continue;
+            const actionMd = await fs.readFile(path.join(hostDir, "actions", f), "utf8");
+            const name = f.replace(/\.md$/, "");
+            pages.push({ url: `sui://${host}/actions/${name}`, routePath: `/sui/${host}/actions/${name}`, title: `Action: ${name}`, markdown: actionMd });
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* no sui dir */ }
+    return { pages, images: [], walrus: null, brand: null, designSystem: null, screenshots: null, sui: suiIndex, target: `https://${(await readRunManifest(runsDir, id)).normalizedTarget?.replace(/^https?:\/\//, "") ?? id}` };
+  }
+
+  return manifest;
+});
+
+app.get("/api/runs/:id/sui-abi", async (request) => {
+  const id = (request.params as { id: string }).id;
+  await requireRunAccess(request.headers.authorization, id);
+  const runDir = path.join(runsDir, id);
+  const suiBase = path.join(runDir, "context", "sui");
+
+  type FlatFunction = { name: string; target: string; visibility: string; typeParams: number; params: string[]; returns: string[] };
+  type FlatStruct = { name: string; abilities: string[]; typeParams: number; fields: Array<{ name: string; type: string }> };
+  type FlatModule = { name: string; entryFunctions: FlatFunction[]; allFunctions: FlatFunction[]; structs: FlatStruct[] };
+  type FlatPackage = { id: string; modules: FlatModule[] };
+
+  const packages: FlatPackage[] = [];
+  let network = "mainnet";
+  let host = "";
+
+  try {
+    const hostDirs = await fs.readdir(suiBase);
+    host = hostDirs[0] ?? "";
+    for (const h of hostDirs) {
+      const abiPath = path.join(suiBase, h, "abi.json");
+      try {
+        const raw = JSON.parse(await fs.readFile(abiPath, "utf8")) as SuiAbi;
+        network = raw.rpcEndpoint.includes("testnet") ? "testnet" : "mainnet";
+        for (const [pkgId, pkg] of Object.entries(raw.packages).sort(([a], [b]) => a.localeCompare(b))) {
+          const modules: FlatModule[] = [];
+          for (const [modName, mod] of Object.entries(pkg.modules).sort(([a], [b]) => a.localeCompare(b))) {
+            const entryFunctions: FlatFunction[] = [];
+            const allFunctions: FlatFunction[] = [];
+            for (const [fnName, fn] of Object.entries(mod.exposedFunctions ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+              const typeParamNames = fn.typeParameters.map((_, i) => `T${i}`);
+              const flat: FlatFunction = {
+                name: fnName,
+                target: `${pkgId}::${modName}::${fnName}`,
+                visibility: fn.visibility,
+                typeParams: fn.typeParameters.length,
+                params: fn.parameters.map((p) => renderTypeTag(p, typeParamNames)),
+                returns: fn.return.map((r) => renderTypeTag(r, typeParamNames))
+              };
+              allFunctions.push(flat);
+              if (fn.isEntry) entryFunctions.push(flat);
+            }
+            const structs: FlatStruct[] = Object.entries(mod.structs ?? {})
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([sName, s]) => ({
+                name: sName,
+                abilities: s.abilities.abilities.map((a) => a.toLowerCase()),
+                typeParams: s.typeParameters.length,
+                fields: s.fields.map((f) => ({ name: f.name, type: renderTypeTag(f.type, s.typeParameters.map((_, i) => `T${i}`)) }))
+              }));
+            if (entryFunctions.length > 0 || structs.length > 0) {
+              modules.push({ name: modName, entryFunctions, allFunctions, structs });
+            }
+          }
+          if (modules.length > 0) packages.push({ id: pkgId, modules });
+        }
+      } catch { /* skip missing abi */ }
+    }
+  } catch { /* no sui dir */ }
+
+  return { host, network, packages };
+});
+
+app.get("/api/runs/:id/api-calls", async (request) => {
+  const id = (request.params as { id: string }).id;
+  await requireRunAccess(request.headers.authorization, id);
+  const runDir = path.join(runsDir, id);
+  const cachePath = path.join(runDir, "context", "api-calls.json");
+
+  // Return cached extraction if present
+  try {
+    return JSON.parse(await fs.readFile(cachePath, "utf8")) as ApiCallsResult;
+  } catch { /* not cached yet — extract on demand */ }
+
+  const manifest = await readRunManifest(runsDir, id);
+  const targetUrl = manifest.target ?? manifest.normalizedTarget ?? "";
+  if (!targetUrl) return { target: "", host: "", calls: [], extractedAt: new Date().toISOString() };
+
+  let host = "";
+  try { host = new URL(targetUrl).hostname; } catch { host = targetUrl; }
+
+  try {
+    const bundleResult = await scrapeSuiBundle(
+      { url: targetUrl, host, network: "mainnet" },
+      { maxTotalBytes: 50 * 1024 * 1024, maxFollowDepth: 1, allowLoopback: false, cacheDir: path.join(runsDir, ".cache") }
+    );
+    const { calls, authRequired, authHints, graphql } = extractApiCalls(bundleResult.chunks);
+    const result: ApiCallsResult = { target: targetUrl, host, calls, authRequired, authHints, graphql, extractedAt: new Date().toISOString() };
+    await fs.mkdir(path.dirname(cachePath), { recursive: true });
+    await fs.writeFile(cachePath, JSON.stringify(result));
+    return result;
+  } catch (err) {
+    app.log.error({ err, targetUrl }, "api-calls on-demand bundle extraction failed");
+    return { target: targetUrl, host, calls: [], extractedAt: new Date().toISOString() };
+  }
 });
 
 app.get("/api/runs/:id/artifact-files", async (request) => {
